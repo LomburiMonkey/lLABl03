@@ -21,7 +21,7 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#define IC_BUFFER_SIZE 20
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -41,21 +41,30 @@
 /* Private variables ---------------------------------------------------------*/
 TIM_HandleTypeDef htim1;
 TIM_HandleTypeDef htim2;
+DMA_HandleTypeDef hdma_tim2_ch1;
 
 UART_HandleTypeDef huart2;
 
 /* USER CODE BEGIN PV */
+uint32_t InputCaptureBuffer[IC_BUFFER_SIZE];
+float averageRisingedgePeriod;
+uint32_t Motorduty = 20;
+uint32_t MotorReadRPM = 0;
+uint32_t MotorSetRPM = 0;
+uint32_t MotorControlEnable;
+uint32_t MotorSetDuty;
 
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
+static void MX_DMA_Init(void);
 static void MX_USART2_UART_Init(void);
 static void MX_TIM1_Init(void);
 static void MX_TIM2_Init(void);
 /* USER CODE BEGIN PFP */
-
+float IC_Calc_Period();
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -91,11 +100,16 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
+  MX_DMA_Init();
   MX_USART2_UART_Init();
   MX_TIM1_Init();
   MX_TIM2_Init();
   /* USER CODE BEGIN 2 */
+  HAL_TIM_Base_Start(&htim2);
+  HAL_TIM_IC_Start_DMA(&htim2, TIM_CHANNEL_1, InputCaptureBuffer, IC_BUFFER_SIZE);
 
+  HAL_TIM_Base_Start(&htim1);
+  HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -105,7 +119,35 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
+	  static uint32_t timestamp = 0;
+		  if (HAL_GetTick()>= timestamp)
+		  {
+		  	timestamp = HAL_GetTick()+500;
+		  	averageRisingedgePeriod = IC_Calc_Period();
+		  	__HAL_TIM_SET_COMPARE(&htim1,TIM_CHANNEL_1,Motorduty*10);
+		  MotorReadRPM = (60/(12*averageRisingedgePeriod*64*0.000001));
+		  if (MotorControlEnable == 1)
+		  {
+				if(MotorSetRPM > MotorReadRPM)
+				{
+					Motorduty+=1;
+
+				}
+				else if (MotorSetRPM< MotorReadRPM)
+				{
+					Motorduty-=1;
+				}
+		  }
+		  else if(MotorControlEnable == 0)
+		  {
+
+			  __HAL_TIM_SET_COMPARE(&htim1,TIM_CHANNEL_1,Motorduty*10);
+
+		  }
+		  }
+
   }
+
   /* USER CODE END 3 */
 }
 
@@ -169,15 +211,16 @@ static void MX_TIM1_Init(void)
 
   TIM_ClockConfigTypeDef sClockSourceConfig = {0};
   TIM_MasterConfigTypeDef sMasterConfig = {0};
-  TIM_IC_InitTypeDef sConfigIC = {0};
+  TIM_OC_InitTypeDef sConfigOC = {0};
+  TIM_BreakDeadTimeConfigTypeDef sBreakDeadTimeConfig = {0};
 
   /* USER CODE BEGIN TIM1_Init 1 */
 
   /* USER CODE END TIM1_Init 1 */
   htim1.Instance = TIM1;
-  htim1.Init.Prescaler = 0;
+  htim1.Init.Prescaler = 83;
   htim1.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim1.Init.Period = 65535;
+  htim1.Init.Period = 1000;
   htim1.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim1.Init.RepetitionCounter = 0;
   htim1.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
@@ -190,7 +233,7 @@ static void MX_TIM1_Init(void)
   {
     Error_Handler();
   }
-  if (HAL_TIM_IC_Init(&htim1) != HAL_OK)
+  if (HAL_TIM_PWM_Init(&htim1) != HAL_OK)
   {
     Error_Handler();
   }
@@ -200,17 +243,32 @@ static void MX_TIM1_Init(void)
   {
     Error_Handler();
   }
-  sConfigIC.ICPolarity = TIM_INPUTCHANNELPOLARITY_RISING;
-  sConfigIC.ICSelection = TIM_ICSELECTION_DIRECTTI;
-  sConfigIC.ICPrescaler = TIM_ICPSC_DIV1;
-  sConfigIC.ICFilter = 0;
-  if (HAL_TIM_IC_ConfigChannel(&htim1, &sConfigIC, TIM_CHANNEL_1) != HAL_OK)
+  sConfigOC.OCMode = TIM_OCMODE_PWM1;
+  sConfigOC.Pulse = 500;
+  sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
+  sConfigOC.OCNPolarity = TIM_OCNPOLARITY_HIGH;
+  sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
+  sConfigOC.OCIdleState = TIM_OCIDLESTATE_RESET;
+  sConfigOC.OCNIdleState = TIM_OCNIDLESTATE_RESET;
+  if (HAL_TIM_PWM_ConfigChannel(&htim1, &sConfigOC, TIM_CHANNEL_1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sBreakDeadTimeConfig.OffStateRunMode = TIM_OSSR_DISABLE;
+  sBreakDeadTimeConfig.OffStateIDLEMode = TIM_OSSI_DISABLE;
+  sBreakDeadTimeConfig.LockLevel = TIM_LOCKLEVEL_OFF;
+  sBreakDeadTimeConfig.DeadTime = 0;
+  sBreakDeadTimeConfig.BreakState = TIM_BREAK_DISABLE;
+  sBreakDeadTimeConfig.BreakPolarity = TIM_BREAKPOLARITY_HIGH;
+  sBreakDeadTimeConfig.AutomaticOutput = TIM_AUTOMATICOUTPUT_DISABLE;
+  if (HAL_TIMEx_ConfigBreakDeadTime(&htim1, &sBreakDeadTimeConfig) != HAL_OK)
   {
     Error_Handler();
   }
   /* USER CODE BEGIN TIM1_Init 2 */
 
   /* USER CODE END TIM1_Init 2 */
+  HAL_TIM_MspPostInit(&htim1);
 
 }
 
@@ -306,6 +364,22 @@ static void MX_USART2_UART_Init(void)
 }
 
 /**
+  * Enable DMA controller clock
+  */
+static void MX_DMA_Init(void)
+{
+
+  /* DMA controller clock enable */
+  __HAL_RCC_DMA1_CLK_ENABLE();
+
+  /* DMA interrupt init */
+  /* DMA1_Stream5_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA1_Stream5_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(DMA1_Stream5_IRQn);
+
+}
+
+/**
   * @brief GPIO Initialization Function
   * @param None
   * @retval None
@@ -339,7 +413,25 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
+float IC_Calc_Period()
+{
+	uint32_t currentDMAPointer = IC_BUFFER_SIZE - __HAL_DMA_GET_COUNTER((htim2.hdma[1]));
 
+	uint32_t lastVaildDMAPointer = (currentDMAPointer-1 + IC_BUFFER_SIZE) % IC_BUFFER_SIZE;
+
+	uint32_t i = (lastVaildDMAPointer + IC_BUFFER_SIZE - 6) % IC_BUFFER_SIZE;
+
+	int32_t sumdiff = 0;
+	while (i != lastVaildDMAPointer)
+	{
+		uint32_t firstCapture = InputCaptureBuffer[i];
+
+		uint32_t NextCapture = InputCaptureBuffer[(i+1)%IC_BUFFER_SIZE];
+		sumdiff += NextCapture - firstCapture;
+		i = (i+1) % IC_BUFFER_SIZE;
+	}
+	return sumdiff / 5.0;
+}
 /* USER CODE END 4 */
 
 /**
